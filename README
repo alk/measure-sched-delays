@@ -1,0 +1,9 @@
+collect-sched-delays.rb runs measure-sched-delays on each cpu sending
+output to a bunch of per-cpu files.
+
+Each line of output is unix epoch real time and lateness of timer
+signal in nanoseconds.
+
+measure-sched-delays needs root as it runs under real-time priority.
+
+The goal is to measure virtualization environment delays.
