@@ -10,15 +10,20 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <pthread.h>
+#include <assert.h>
 
 int64_t target_nanos;
 timer_t timerid;
 
+#define TIMER_SIG SIGRTMIN
+
 #define BUFSIZE (1024*1024)
 
-volatile sig_atomic_t current_buffer;
-volatile sig_atomic_t bufpos[2];
-char buffers[2][BUFSIZE];
+static int current_buffer;
+static int writer_current_buffer;
+static int bufpos[2];
+static char buffers[2][BUFSIZE];
 
 static
 int64_t read_nanos(int type)
@@ -41,7 +46,7 @@ int int_min(int a, int b)
 }
 
 static
-void signal_handler(void)
+void handle_timer_tick(void)
 {
 	int64_t nanos = read_nanos(CLOCK_MONOTONIC);
 	int current = current_buffer;
@@ -61,21 +66,29 @@ void signal_handler(void)
 	target_nanos += 1000000000LL;
 }
 
-static
-void mysigsuspend(void)
+static pthread_mutex_t current_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t have_data_cond = PTHREAD_COND_INITIALIZER;
+
+void *rt_thread(void *dummy)
 {
-	sigset_t new;
+	struct sched_param sp;
+	sigset_t ss;
 	int rv;
-	rv = sigprocmask(SIG_BLOCK, 0, &new);
-	if (rv < 0) {
-		perror("sigprocmask");
-		exit(1);
+
+	sigemptyset(&ss);
+	sigaddset(&ss, TIMER_SIG);
+
+	while (1) {
+		int signo;
+		sigwait(&ss, &signo);
+		assert(signo == TIMER_SIG);
+
+		pthread_mutex_lock(&current_buffer_lock);
+		handle_timer_tick();
+		pthread_cond_signal(&have_data_cond);
+		pthread_mutex_unlock(&current_buffer_lock);
 	}
-	rv = sigsuspend(&new);
-	if (rv < 0 && errno != EINTR) {
-		perror("sigsuspend");
-		exit(1);
-	}
+
 }
 
 
@@ -84,22 +97,10 @@ int main()
 	struct sigevent sev;
 	struct itimerspec its;
 	struct sigaction sa;
-	int rv;
-
+	pthread_t threadid;
 	struct sched_param sp;
-
-	/* sets smaller buffer size. We're fine with passing those
-	 * writes to kernel sooner */
-	setvbuf(stdout, 0, _IONBF, 0);
-
-	/* ruby effing crap sets them to ignore which childs inherit
-	 * (WAT!) */
-	sa.sa_handler = SIG_DFL;
-	sigaction(SIGHUP, &sa, 0);
-	sigaction(SIGINT, &sa, 0);
-	sigaction(SIGQUIT, &sa, 0);
-
-	memset(&sp, 0, sizeof(sp));
+	sigset_t ss;
+	int rv;
 
 	sp.sched_priority = sched_get_priority_max(SCHED_FIFO);
 
@@ -109,29 +110,42 @@ int main()
 		exit(1);
 	}
 
+	/* sets smaller buffer size. We're fine with passing those
+	 * writes to kernel sooner */
+	setvbuf(stdout, 0, _IONBF, 0);
+
+	/* ruby effing crap sets them to ignore which childs inherit
+	 * (WAT!) */
+	memset(&sa, 0, sizeof(struct sigaction));
+	sa.sa_handler = SIG_DFL;
+	sigaction(SIGHUP, &sa, 0);
+	sigaction(SIGINT, &sa, 0);
+	sigaction(SIGQUIT, &sa, 0);
+
+	memset(&sp, 0, sizeof(sp));
+
 	rv = mlockall(MCL_CURRENT | MCL_FUTURE);
 	if (rv < 0) {
 		perror("mlockall");
 		exit(1);
 	}
 
-	memset(&sa, 0, sizeof(struct sigaction));
-	sa.sa_flags = SA_SIGINFO | SA_RESTART;
-	sigemptyset(&sa.sa_mask);
-	sigaddset(&sa.sa_mask, SIGRTMIN);
-	sa.sa_sigaction = (void *)signal_handler;
-
 	sev.sigev_notify = SIGEV_SIGNAL;
-	sev.sigev_signo = SIGRTMIN;
+	sev.sigev_signo = TIMER_SIG;
 	sev.sigev_value.sival_ptr = &timerid;
 	if (timer_create(CLOCK_MONOTONIC, &sev, &timerid) == -1) {
 		perror("timer_create");
 		exit(1);
 	}
 
-	rv = sigaction(SIGRTMIN, &sa, 0);
+	sigemptyset(&ss);
+	sigaddset(&ss, TIMER_SIG);
+	sigprocmask(SIG_BLOCK, &ss, 0);
+
+	rv = pthread_create(&threadid, 0, rt_thread, 0);
 	if (rv) {
-		perror("sigaction");
+		errno = rv;
+		perror("pthread_create");
 		exit(1);
 	}
 
@@ -152,16 +166,21 @@ int main()
 		exit(1);
 	}
 
+	pthread_mutex_lock(&current_buffer_lock);
 	while (1) {
 		int current = current_buffer;
-		if (bufpos[current]) {
-			int pos;
-			current_buffer = current ^ 1;
-			pos = bufpos[current];
-			fwrite(buffers[current], 1, pos, stdout);
-			bufpos[current] = 0;
+		int pos;
+
+		if (!bufpos[current]) {
+			pthread_cond_wait(&have_data_cond, &current_buffer_lock);
 			continue;
 		}
-		mysigsuspend();
+
+		current_buffer = current ^ 1;
+		pos = bufpos[current];
+		pthread_mutex_unlock(&current_buffer_lock);
+		fwrite(buffers[current], 1, pos, stdout);
+		bufpos[current] = 0;
+		pthread_mutex_lock(&current_buffer_lock);
 	}
 }
