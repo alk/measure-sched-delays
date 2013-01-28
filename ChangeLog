@@ -1,0 +1,22 @@
+commit dc0be7f4c60cc957214dfd3203870fc8fb0d75db
+Author: Aliaksey Kandratsenka <alk@tut.by>
+Date:   Wed Jan 23 17:04:41 2013 -0800
+
+    Revert "have dedicated thread handle timer signals"
+    
+    This reverts commit 5bd1264d9e5b58a02f5b8e6ae9b4bea873d01079.
+
+commit 5bd1264d9e5b58a02f5b8e6ae9b4bea873d01079
+Author: Aliaksey Kandratsenka <alk@tut.by>
+Date:   Wed Jan 23 17:02:31 2013 -0800
+
+    have dedicated thread handle timer signals
+    
+    Because write to actual files is not actually interruptible via
+    signals on Linux.
+
+commit fb9dc56ac2d274a54549bdae4bb20af5324b7703
+Author: Aliaksey Kandratsenka <alk@tut.by>
+Date:   Sat Sep 29 10:08:53 2012 +0300
+
+    initial
