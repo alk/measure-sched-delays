@@ -12,6 +12,7 @@
 /config.guess
 /config.sub
 /measure-sched-delays
+/measure-sched-delays.exe
 Makefile
 Makefile.in
 aclocal.m4

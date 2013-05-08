@@ -1,0 +1,16 @@
+
+LDFLAGS ?=
+
+LDFLAGS += -lwinmm
+
+CFLAGS ?= -O1 -ggdb3
+
+CC := x86_64-w64-mingw32-gcc
+
+all: measure-sched-delays.exe
+
+measure-sched-delays.exe: measure-sched-delays-win.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+clean:
+	rm -rf measure-sched-delays.exe measure-sched-delays-win.o
